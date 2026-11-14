@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>合成大茶包 - 禅意水彩版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #f4f1ea; font-family: "STKaiti", "楷体", serif; }
+        canvas { display: block; margin: 0 auto; background: #fff; cursor: none; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .score { position: absolute; top: 20px; left: 20px; font-size: 28px; color: #5d5b4a; font-weight: bold; text-shadow: 1px 1px 2px white; }
+        #mute-btn { position: absolute; top: 20px; right: 20px; width: 45px; height: 45px; cursor: pointer; pointer-events: auto; background: rgba(255,255,255,0.9); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; border: 1px solid #d1ccb9; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        #game-over { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(255,255,255,0.98); padding: 40px; border-radius: 20px; text-align: center; display: none; pointer-events: auto; border: 3px solid #8b9d83; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        button { padding: 12px 30px; background: #8b9d83; color: white; border: none; border-radius: 25px; cursor: pointer; font-size: 18px; transition: 0.3s; }
+        button:hover { background: #6e7d68; }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="score">🍵 韵味值: <span id="score-val">0</span></div>
+    <div id="mute-btn">🔊</div>
+    <div id="game-over">
+        <h2 style="color: #4a5d4a; font-size: 32px;">茶缘已尽</h2>
+        <p id="final-score" style="font-size: 20px; margin: 20px 0;"></p>
+        <button onclick="location.reload()">再沏一壶</button>
+    </div>
+</div>
+
+<script>
+/** 游戏配置 **/
+const CONFIG = {
+    width: window.innerWidth > 500 ? 450 : window.innerWidth,
+    height: window.innerHeight,
+    maxLevel: 12,
+    originalImgSize: 200 // 假设裁剪后的单张图片是 200x200
+};
+
+// 对应 1.png 到 12.png
+const TEA_LEVELS = [
+    { name: '茶籽', radius: 18, score: 1, img: '1.png' },
+    { name: '发芽', radius: 28, score: 2, img: '2.png' },
+    { name: '茶苗', radius: 38, score: 4, img: '3.png' },
+    { name: '鲜叶', radius: 48, score: 8, img: '4.png' },
+    { name: '嫩芽尖', radius: 58, score: 16, img: '5.png' },
+    { name: '杀青', radius: 68, score: 32, img: '6.png' },
+    { name: '揉捻', radius: 78, score: 64, img: '7.png' },
+    { name: '干燥', radius: 88, score: 128, img: '8.png' },
+    { name: '散茶', radius: 98, score: 256, img: '9.png' },
+    { name: '茶罐', radius: 108, score: 512, img: '10.png' },
+    { name: '冲泡', radius: 125, score: 1024, img: '11.png' },
+    { name: '茶包', radius: 145, score: 2048, img: '12.png' }
+];
+
+/** 禅意音效引擎 **/
+class TeaAudio {
+    constructor() {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.isMuted = localStorage.getItem('teaMuted') === 'true';
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.connect(this.ctx.destination);
+        this.updateMute();
+        this.startBGM();
+    }
+    updateMute() {
+        this.masterGain.gain.value = this.isMuted ? 0 : 1;
+        document.getElementById('mute-btn').innerText = this.isMuted ? '🔇' : '🔊';
+        localStorage.setItem('teaMuted', this.isMuted);
+    }
+    playTone(freq, type, duration, gainValue = 0.1) {
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        g.gain.setValueAtTime(gainValue, this.ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+        osc.connect(g);
+        g.connect(this.masterGain);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+    }
+    playDrop() {
+        this.playTone(150, 'sine', 0.3, 0.3); // 咚
+        this.playNoise(0.1, 0.05); // 沙沙
+    }
+    playNoise(duration, volume) {
+        const bufferSize = this.ctx.sampleRate * duration;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(volume, this.ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + duration);
+        noise.connect(g);
+        g.connect(this.masterGain);
+        noise.start();
+    }
+    playMerge(level) {
+        const baseFreq = 261.63 * Math.pow(1.059, level);
+        const triad = [1, 1.25, 1.5]; // 大三和弦
+        triad.forEach(interval => this.playTone(baseFreq * interval, 'sine', 0.8, 0.1));
+        if (level === 5) this.playNoise(0.3, 0.2); // 杀青：呲
+        if (level >= 6 && level <= 8) this.playNoise(0.5, 0.1); // 炒茶沙沙声
+    }
+    playWin() {
+        [523, 659, 783, 1046].forEach((f, i) => setTimeout(() => this.playTone(f, 'sine', 1.5, 0.1), i * 200));
+        this.playNoise(1, 0.05); // 茶汤注入声
+    }
+    startBGM() {
+        const pentatonic = [261.63, 293.66, 329.63, 392.00, 440.00];
+        setInterval(() => {
+            if (!document.hidden && Math.random() > 0.4) {
+                const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)];
+                this.playTone(freq, 'sine', 3, 0.015);
+            }
+        }, 1800);
+    }
+}
+
+/** 物理引擎逻辑 **/
+const audio = new TeaAudio();
+const { Engine, Render, Runner, Bodies, Composite, Events, Body } = Matter;
+
+const engine = Engine.create();
+const render = Render.create({
+    element: document.body,
+    engine: engine,
+    options: { width: CONFIG.width, height: CONFIG.height, wireframes: false, background: '#f4f1ea' }
+});
+
+// 边界
+const ground = Bodies.rectangle(CONFIG.width/2, CONFIG.height + 30, CONFIG.width, 100, { isStatic: true, friction: 0.5 });
+const leftWall = Bodies.rectangle(-30, CONFIG.height/2, 100, CONFIG.height, { isStatic: true });
+const rightWall = Bodies.rectangle(CONFIG.width + 30, CONFIG.height/2, 100, CONFIG.height, { isStatic: true });
+Composite.add(engine.world, [ground, leftWall, rightWall]);
+
+Render.run(render);
+Runner.run(Runner.create(), engine);
+
+let currentScore = 0;
+let isGameOver = false;
+let nextBall = null;
+let canDrop = true;
+let mouseX = CONFIG.width / 2;
+
+function createBall(x, y, level, isStatic = false) {
+    const info = TEA_LEVELS[level];
+    const scale = (info.radius * 2) / CONFIG.originalImgSize;
+    const ball = Bodies.circle(x, y, info.radius, {
+        restitution: 0.3,
+        friction: 0.1,
+        isStatic: isStatic,
+        render: {
+            sprite: {
+                texture: info.img,
+                xScale: scale,
+                yScale: scale
+            }
+        }
+    });
+    ball.level = level;
+    return ball;
+}
+
+function spawnNext() {
+    if (isGameOver) return;
+    const level = Math.floor(Math.random() * 3);
+    nextBall = createBall(mouseX, 80, level, true);
+    Composite.add(engine.world, nextBall);
+    canDrop = true;
+}
+
+// 机械手视觉绘制
+Events.on(render, 'afterRender', () => {
+    const ctx = render.context;
+    ctx.strokeStyle = '#8d7d66';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(mouseX, 0);
+    ctx.lineTo(mouseX, 60);
+    ctx.stroke();
+    ctx.fillStyle = '#8d7d66';
+    ctx.fillRect(mouseX - 20, 60, 40, 10);
+    ctx.beginPath();
+    ctx.arc(mouseX - 20, 75, 10, 0, Math.PI);
+    ctx.arc(mouseX + 20, 75, 10, 0, Math.PI);
+    ctx.stroke();
+});
+
+// 交互
+window.addEventListener('mousemove', (e) => {
+    if (isGameOver) return;
+    mouseX = Math.max(30, Math.min(CONFIG.width - 30, e.clientX - render.canvas.offsetLeft));
+    if (nextBall && canDrop) {
+        Body.setPosition(nextBall, { x: mouseX, y: 80 });
+    }
+});
+
+window.addEventListener('mousedown', () => {
+    if (isGameOver || !canDrop || !nextBall) return;
+    canDrop = false;
+    Body.setStatic(nextBall, false);
+    audio.playDrop();
+    setTimeout(spawnNext, 1000);
+});
+
+// 合成逻辑
+Events.on(engine, 'collisionStart', (event) => {
+    event.pairs.forEach(pair => {
+        const { bodyA, bodyB } = pair;
+        if (bodyA.level !== undefined && bodyA.level === bodyB.level) {
+            if (bodyA.level < CONFIG.maxLevel - 1) {
+                const newLevel = bodyA.level + 1;
+                const newX = (bodyA.position.x + bodyB.position.x) / 2;
+                const newY = (bodyA.position.y + bodyB.position.y) / 2;
+                
+                Composite.remove(engine.world, [bodyA, bodyB]);
+                const newBall = createBall(newX, newY, newLevel);
+                Composite.add(engine.world, newBall);
+                
+                currentScore += TEA_LEVELS[newLevel].score;
+                document.getElementById('score-val').innerText = currentScore;
+                audio.playMerge(newLevel);
+
+                if (newLevel === CONFIG.maxLevel - 1) {
+                    currentScore += 500;
+                    document.getElementById('score-val').innerText = currentScore;
+                    audio.playWin();
+                }
+            }
+        }
+    });
+});
+
+// 失败检测
+Events.on(engine, 'afterUpdate', () => {
+    Composite.allBodies(engine.world).forEach(body => {
+        if (!body.isStatic && body.position.y < 120 && !canDrop) {
+            if (!body.stayTime) body.stayTime = Date.now();
+            if (Date.now() - body.stayTime > 2500) triggerGameOver();
+        } else {
+            body.stayTime = null;
+        }
+    });
+});
+
+function triggerGameOver() {
+    if (isGameOver) return;
+    isGameOver = true;
+    document.getElementById('game-over').style.display = 'block';
+    document.getElementById('final-score').innerText = `最终韵味值: ${currentScore}`;
+}
+
+document.getElementById('mute-btn').addEventListener('click', () => {
+    audio.isMuted = !audio.isMuted;
+    audio.updateMute();
+});
+
+spawnNext();
+</script>
+</body>
+</html>
